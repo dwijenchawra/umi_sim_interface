@@ -1,0 +1,48 @@
+# Configuration for the simulated bimanual robot environment using ROS2 topics.
+# This file mirrors the structure of the real robot config but omits hardware-specific details
+# like IP addresses and ports, and explicit latency values (assumed handled by ROS timestamps).
+
+# Transformation from the left arm's base frame to the right arm's base frame
+# Ensure this matches the relative placement of the robots in your Isaac Sim scene (envtest.usd).
+tx_left_right:
+  - [ 0.99996206,  0.00661996,  0.00566226, -0.01676012]
+  - [-0.00663261,  0.99997554,  0.0022186 , -0.60552492] # y offset approx -0.605m
+  - [-0.00564743, -0.00225607,  0.99998151, -0.007277  ]
+  - [ 0.        ,  0.        ,  0.        ,  1.        ]
+
+# Robot configurations (index 0: left arm, index 1: right arm)
+robots:
+  - # Robot 0 (Left Arm in Isaac Sim example)
+    robot_id: 0
+    robot_type: 'ur5e' # Matches the type used in envtest.py BimanualManipulationCfg
+    tcp_offset: 0.235   # Tool Center Point offset from flange in meters (along tool z-axis)
+    # Table height threshold for finger collision avoidance (optional in sim, but kept for potential use)
+    height_threshold: 0.027 # Example value, adjust if needed/used
+    # Sphere collision primitive (for inter-arm avoidance logic, if kept in eval_real.py)
+    sphere_radius: 0.13
+    sphere_center: [0.0, 0.0, -0.185] # Relative to EEF frame (tool0)
+    robot_obs_latency: 0.0001
+
+
+  # - # Robot 1 (Right Arm in Isaac Sim example)
+  #   robot_type: 'ur10e' # Matches the type used in envtest.py BimanualManipulationCfg
+  #   tcp_offset: 0.235   # Tool Center Point offset from flange in meters (along tool z-axis)
+  #   # Table height threshold
+  #   height_threshold: 0.022 # Example value, adjust if needed/used
+  #   # Sphere collision primitive
+  #   sphere_radius: 0.13
+  #   sphere_center: [0.0, 0.0, -0.185] # Relative to EEF frame (tool0)
+
+# Gripper configurations (index 0: left gripper, index 1: right gripper)
+# These parameters help map simulation joint values to physical widths (meters)
+# IMPORTANT: Adjust these based on your specific gripper URDF and joint limits in the simulation.
+grippers:
+  - # Gripper 0 (Left)
+    # Joint limits corresponding to min/max width in the simulation URDF/MJCF
+    joint_limits: [0.0, 45] # Example: finger_joint limits
+    # Corresponding physical width in meters at min/max joint limits
+    width_limits: [0.0, 0.085] # Example: Robotiq 2F-85 range
+
+  # - # Gripper 1 (Right)
+  #   joint_limits: [0.0, 0.8]
+  #   width_limits: [0.0, 0.085]
