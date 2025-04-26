@@ -167,6 +167,22 @@ def get_real_umi_obs_dict(
             rel_obs_pose = mat_to_pose10d(rel_obs_pose_mat)
             # obs_dict_np[f'robot{robot_id}_eef_pos_wrt_start'] = rel_obs_pose[:,:3]
             obs_dict_np[f'robot{robot_id}_eef_rot_axis_angle_wrt_start'] = rel_obs_pose[:,3:]
+    
+    
+    # # visualize all data in obs dict
+    # import matplotlib.pyplot as plt
+
+    # for key, value in obs_dict_np.items():
+    #     if value.ndim <= 2:  # Small arrays
+    #         print(f"{key}: {value}")
+    #     elif value.ndim == 4 and value.shape[1] in [1, 3]:  # Images in TCHW format
+    #         for i in range(min(3, value.shape[0])):  # Show up to 3 images
+    #             img = np.moveaxis(value[i], 0, -1)  # Convert TCHW to HWC
+    #             # temp: skip the conversion
+    #             # img = value[i]
+    #             plt.imshow(img)
+    #             plt.title(f"{key} - Image {i}")
+    #             plt.show()
 
     return obs_dict_np
 
