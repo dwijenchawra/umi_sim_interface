@@ -238,7 +238,7 @@ class SimBimanualUmiEnv:
                     shm_manager=shm_manager,
                     ros_node=self.ros_node,
                     robot_id=rc['robot_id'],
-                    frequency=500 if rc['robot_type'] == 'ur5e' else 125,
+                    frequency=60,
                     lookahead_time=0.1,
                     soft_real_time=False,
                     verbose=False,
@@ -253,8 +253,10 @@ class SimBimanualUmiEnv:
         for gc in grippers_config:
             this_gripper = SimGripperController(
                 shm_manager=shm_manager,
+                gripper_id=gc['gripper_id'],
+                width_limits=gc['width_limits'],
                 ros_node=self.ros_node,
-                frequency=30,
+                frequency=60,
                 command_queue_size=1024,
                 verbose=False,
             )
@@ -297,6 +299,9 @@ class SimBimanualUmiEnv:
     # ======== start-stop API =============
     @property
     def is_ready(self):
+        # print("camera ready: ", self.camera.is_ready, 
+            # "robots ready: ", [robot.is_ready for robot in self.robots],
+            # "grippers ready: ", [gripper.is_ready for gripper in self.grippers])
         ready_flag = self.camera.is_ready
         for robot in self.robots:
             ready_flag = ready_flag and robot.is_ready
@@ -383,6 +388,10 @@ class SimBimanualUmiEnv:
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            print(f"Exception occurred: {exc_type.__name__}: {exc_val}")
+            import traceback
+            traceback.print_tb(exc_tb)
         self.stop()
 
     # ========= async env API ===========
@@ -467,8 +476,8 @@ class SimBimanualUmiEnv:
             np.arange(self.robot_obs_horizon)[::-1] * self.robot_down_sample_steps * dt)
         for robot_idx, last_robot_data in enumerate(last_robots_data):
             robot_pose_interpolator = PoseInterpolator(
-                t=last_robot_data['robot_timestamp'], 
-                x=last_robot_data['ActualTCPPose'])
+                t=last_robot_data['recv_time'],
+                x=last_robot_data['eef_pose'])
             robot_pose = robot_pose_interpolator(robot_obs_timestamps)
             robot_obs = {
                 f'robot{robot_idx}_eef_pos': robot_pose[...,:3],
@@ -483,7 +492,7 @@ class SimBimanualUmiEnv:
         for robot_idx, last_gripper_data in enumerate(last_grippers_data):
             # align gripper obs
             gripper_interpolator = get_interp1d(
-                t=last_gripper_data['gripper_timestamp'],
+                t=last_gripper_data['recv_time'],
                 x=last_gripper_data['gripper_position'][...,None]
             )
             gripper_obs = {
@@ -498,27 +507,26 @@ class SimBimanualUmiEnv:
             for robot_idx, last_robot_data in enumerate(last_robots_data):
                 self.obs_accumulator.put(
                     data={
-                        f'robot{robot_idx}_eef_pose': last_robot_data['ActualTCPPose'],
-                        f'robot{robot_idx}_joint_pos': last_robot_data['ActualQ'],
-                        f'robot{robot_idx}_joint_vel': last_robot_data['ActualQd'],
+                        f'robot{robot_idx}_eef_pose': last_robot_data['eef_pose'],
                     },
-                    timestamps=last_robot_data['robot_timestamp']
+                    timestamps=last_robot_data['recv_time']
                 )
 
             for robot_idx, last_gripper_data in enumerate(last_grippers_data):
                 self.obs_accumulator.put(
                     data={
-                        f'robot{robot_idx}_gripper_width': last_gripper_data['gripper_position'][...,None]
+                        f'robot{robot_idx}_gripper_width': last_gripper_data['gripper_position'][..., None]
                     },
-                    timestamps=last_gripper_data['gripper_timestamp']
+                    timestamps=last_gripper_data['recv_time']
                 )
-
+        
         return obs_data
     
     def exec_actions(self, 
             actions: np.ndarray, 
             timestamps: np.ndarray,
             compensate_latency=False):
+        print("exec actions")
         assert self.is_ready
         if not isinstance(actions, np.ndarray):
             actions = np.array(actions)
@@ -536,6 +544,7 @@ class SimBimanualUmiEnv:
 
         # schedule waypoints
         for i in range(len(new_actions)):
+            print(f"Executing action {i:02d} at timestamp {timestamps[i]:.3f}: {[f'{x:.2f}' for x in actions[i]]}")
             for robot_idx, (robot, gripper, rc, gc) in enumerate(zip(self.robots, self.grippers, self.robots_config, self.grippers_config)):
                 r_latency = rc['robot_action_latency'] if compensate_latency else 0.0
                 g_latency = gc['gripper_action_latency'] if compensate_latency else 0.0
@@ -549,6 +558,18 @@ class SimBimanualUmiEnv:
                     pos=g_actions,
                     target_time=new_timestamps[i] - g_latency
                 )
+                
+                # send to ros node
+                # self.ros_node.send_target_pose(
+                #     robot_idx=robot_idx,
+                #     target_pose=r_actions
+                # )
+                # self.ros_node.send_target_gripper(
+                #     robot_idx=robot_idx,
+                #     target_width=g_actions
+                # )
+                # print(f"Robot {robot_idx} action: {r_actions}, gripper {robot_idx} action: {g_actions}")
+                
 
         # record actions
         if self.action_accumulator is not None:
@@ -569,7 +590,6 @@ class SimBimanualUmiEnv:
         if start_time is None:
             start_time = time.time()
         self.start_time = start_time
-
         assert self.is_ready
 
         # prepare recording stuff

@@ -23,14 +23,14 @@ class RosSimInterfaceNode(Node):
 
         # Data storage and lock
         self.ros_data_lock = Lock()
-        self.camera_buffers = [deque(maxlen=100) for _ in range(self.num_cameras)]
-        self.eef_pose_buffers = [deque(maxlen=100) for _ in range(self.num_robots)]
-        self.gripper_state_buffers = [deque(maxlen=100) for _ in range(self.num_robots)]
-        
+        self.latest_camera_data = [None] * self.num_cameras
+        self.latest_eef_pose = [None] * self.num_robots
+        self.latest_gripper_state = [None] * self.num_robots
+
         # MAPPING CONVENTION
         # left_arm -> 0
         # right_arm -> 1
-        
+
         # Create subscriptions
         self.camera_subs = []
         for i in range(self.num_cameras):
@@ -45,8 +45,7 @@ class RosSimInterfaceNode(Node):
 
         self.eef_pose_subs = []
         self.gripper_state_subs = []
-        
-        
+
         for i in range(self.num_robots):
             arm_prefix = "left_arm" if i == 0 else "right_arm"
             pose_topic = f'/{arm_prefix}/eef_pose_state'
@@ -96,9 +95,7 @@ class RosSimInterfaceNode(Node):
             img_transformed_chw = np.moveaxis(img_transformed, -1, 0)
 
             with self.ros_data_lock:
-                # print(f"camera_callback: recv data: {recv_time}, ros time: {ros_time_sec}, camera idx: {camera_idx}")
-                self.camera_buffers[camera_idx].append(
-                    (recv_time, ros_time_sec, img_transformed_chw))
+                self.latest_camera_data[camera_idx] = (recv_time, ros_time_sec, img_transformed_chw)
         except Exception as e:
             self.get_logger().error(f"Error processing camera {camera_idx} msg: {e}", throttle_duration_sec=1.0)
 
@@ -114,8 +111,7 @@ class RosSimInterfaceNode(Node):
             pose_6d = np.concatenate([position, rotvec]).astype(np.float32)
 
             with self.ros_data_lock:
-                # print(f"eef_pose_callback: recv data: {recv_time}, ros time: {ros_time_sec}, robot idx: {robot_idx}")
-                self.eef_pose_buffers[robot_idx].append((recv_time, ros_time_sec, pose_6d))
+                self.latest_eef_pose[robot_idx] = (recv_time, ros_time_sec, pose_6d)
         except Exception as e:
             self.get_logger().error(f"Error processing EEF pose {robot_idx} msg: {e}", throttle_duration_sec=1.0)
 
@@ -127,9 +123,7 @@ class RosSimInterfaceNode(Node):
             gripper_width = np.array([msg.data], dtype=np.float32)
 
             with self.ros_data_lock:
-                print(f"gripper_state_callback: recv data: {recv_time}, ros time: {ros_time_sec}, robot idx: {robot_idx}, gripper width: {gripper_width}, queue length: {len(self.gripper_state_buffers[robot_idx])}")
-                self.gripper_state_buffers[robot_idx].append((recv_time, ros_time_sec, gripper_width))
-                print(f"gripper_state_callback: gripper state buffer length: {len(self.gripper_state_buffers[robot_idx])}")
+                self.latest_gripper_state[robot_idx] = (recv_time, ros_time_sec, gripper_width)
         except Exception as e:
             self.get_logger().error(f"Error processing gripper state {robot_idx} msg: {e}", throttle_duration_sec=1.0)
             
@@ -141,43 +135,62 @@ class RosSimInterfaceNode(Node):
             camera_idx = 1
         
         with self.ros_data_lock:
-            print(f"get_camera_data: Camera buffer length: {len(self.camera_buffers[camera_idx])}")
-            if len(self.camera_buffers[camera_idx]) > 0:
-                recv_time, ros_time_sec, img = self.camera_buffers[camera_idx].popleft()
-                return recv_time, ros_time_sec, img
-            else:
-                return None, None, None
+            return self.latest_camera_data[camera_idx]
     
     def get_eef_pose(self, robot_idx: int) -> tuple[float, float, np.ndarray]:
         """Get end-effector pose data from the buffer.
-        note that pose is in the form of [x, y, z, qx, qy, qz, qw]
-        need to convert it into euler angles in here for compatibility with the rest of the codebase
         """
         with self.ros_data_lock:
-            # print(f"get_eef_pose: EEF pose buffer length: {len(self.eef_pose_buffers[robot_idx])}")
-            if len(self.eef_pose_buffers[robot_idx]) > 0:
-                recv_time, ros_time_sec, pose_6d = self.eef_pose_buffers[robot_idx].popleft()
-                position = pose_6d[:3]
-                rotvec = pose_6d[3:]
-                rotation = st.Rotation.from_rotvec(rotvec)
-                quat_xyzw = rotation.as_quat()
-                pose_6d = np.concatenate([position, quat_xyzw]).astype(np.float32)
+            if self.latest_eef_pose[robot_idx] is not None:
+                recv_time, ros_time_sec, pose_6d = self.latest_eef_pose[robot_idx]
+                pose_6d = pose_6d.astype(np.float32)
                 return recv_time, ros_time_sec, pose_6d
             else:
                 return None, None, None
             
-    def get_gripper_state(self, robot_idx: int):
+    def get_gripper_state(self, gripper_idx: int) -> tuple[float, float, np.ndarray]:
         """Get gripper state data from the buffer."""
         with self.ros_data_lock:
-            print(f"get_gripper_state: Gripper state buffer length: {len(self.gripper_state_buffers[robot_idx])}, robot idx: {robot_idx}")
-            if len(self.gripper_state_buffers[robot_idx]) > 0:
-                recv_time, ros_time_sec, gripper_width = self.gripper_state_buffers[robot_idx].popleft()
+            if self.latest_gripper_state[gripper_idx] is not None:
+                recv_time, ros_time_sec, gripper_width = self.latest_gripper_state[gripper_idx]
                 return recv_time, ros_time_sec, gripper_width
             else:
                 return None, None, None
     
     def send_target_pose(self, robot_idx: int, target_pose: np.ndarray):
-        pass
+        # print("sending target pose: ", target_pose)
+        """Send target pose to the robot.
+        target pose is a 6D vector [x, y, z, rx, ry, rz]
+        need to convert to quaternion [x, y, z, w]
+        """
+        # Iterate through robots
+        # Extract pose and gripper action for this robot
+        pose_6d = target_pose
+
+        # Create PoseStamped message
+        pose_msg = PoseStamped()
+        
+        now_ros_time = self.get_clock().now()
+        target_ros_time = now_ros_time 
+        
+        pose_msg.header.stamp = target_ros_time.to_msg()
+        # Frame ID should match what the simulator controller expects (e.g., 'world' or 'base_link')
+        pose_msg.header.frame_id = "world"
+        pose_msg.pose.position.x = float(pose_6d[0])
+        pose_msg.pose.position.y = float(pose_6d[1])
+        pose_msg.pose.position.z = float(pose_6d[2])
+        
+        # Convert rotvec to quaternion (assuming scipy format)
+        quat_xyzw = st.Rotation.from_rotvec(pose_6d[3:]).as_quat()
+        pose_msg.pose.orientation.x = float(quat_xyzw[0])
+        pose_msg.pose.orientation.y = float(quat_xyzw[1])
+        pose_msg.pose.orientation.z = float(quat_xyzw[2])
+        pose_msg.pose.orientation.w = float(quat_xyzw[3])
+
+        # print("SENDING TO ROBOT pose_msg: ", pose_msg)
+        self.target_pose_pubs[robot_idx].publish(pose_msg)
+
+
     
     def send_target_gripper(self, robot_idx: int, target_width: float):
         msg = Float64()

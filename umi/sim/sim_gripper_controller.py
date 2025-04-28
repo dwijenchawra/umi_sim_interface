@@ -21,6 +21,8 @@ class SimGripperController(mp.Process):
     def __init__(self,
             shm_manager: SharedMemoryManager,
             ros_node: RosSimInterfaceNode,
+            gripper_id: int,
+            width_limits: list,
             frequency=10,
             command_queue_size=1024,
             verbose=False
@@ -29,6 +31,8 @@ class SimGripperController(mp.Process):
         self.verbose = verbose
         self.ros_node = ros_node
         self.launch_timeout = 3
+        self.gripper_id = gripper_id
+        self.width_limits = width_limits
         
         # build input queue
         example = {
@@ -127,18 +131,36 @@ class SimGripperController(mp.Process):
     def run(self):
         try:
             keep_running = True
+            iter_idx = 0
+            
+            curr_t = time.monotonic()
+            
+            recv_time, ros_time, curr_pos = self.ros_node.get_gripper_state(gripper_idx=self.gripper_id)
+            curr_pos = curr_pos[0]
+            
+            last_waypoint_time = curr_t
+            pose_interp = PoseTrajectoryInterpolator(
+                times=[curr_t],
+                poses=[[curr_pos,0,0,0,0,0]]
+            )
+
+            t_start = time.monotonic()
             while keep_running:
                 t_now = time.monotonic()
+                dt = 1 / self.frequency
+                t_target = t_now
+                target_pos = pose_interp(t_target)[0]
+                
+                # set target position (already in width unit)
+                self.ros_node.send_target_gripper(robot_idx=self.gripper_id, target_width=target_pos)
 
                 # Fetch gripper state from ROS
-                recv_time, ros_time, gripper_width = self.ros_node.get_gripper_state(robot_idx=0)
-                assert gripper_width is not None, "Gripper width is None"
-                assert ros_time is not None, "ROS time is None"
-                assert recv_time is not None, "Receive time is None"
+                recv_time, ros_time, gripper_width = self.ros_node.get_gripper_state(gripper_idx=self.gripper_id)
+                t_recv = time.time()
                 state = {
                     'gripper_position': gripper_width[0],
                     'ros_time': ros_time,
-                    'recv_time': recv_time
+                    'recv_time': t_recv
                 }
                 self.ring_buffer.put(state)
 
@@ -158,14 +180,39 @@ class SimGripperController(mp.Process):
 
                     if cmd == Command.SHUTDOWN.value:
                         keep_running = False
+                        # stop immediately, ignore later commands
                         break
                     elif cmd == Command.SCHEDULE_WAYPOINT.value:
                         target_pos = command['target_pos']
                         target_time = command['target_time']
-                        self.ros_node.send_target_gripper(robot_idx=0, target_width=target_pos)
+                        # translate global time to monotonic time
+                        target_time = time.monotonic() - time.time() + target_time
+                        curr_time = t_now
+                        pose_interp = pose_interp.schedule_waypoint(
+                            pose=[target_pos, 0, 0, 0, 0, 0],
+                            time=target_time,
+                            max_pos_speed=100,
+                            max_rot_speed=100,
+                            curr_time=curr_time,
+                            last_waypoint_time=last_waypoint_time
+                        )
+                        last_waypoint_time = target_time
+                    elif cmd == Command.RESTART_PUT.value:
+                        t_start = command['target_time'] - time.time() + time.monotonic()
+                        iter_idx = 1
+                    else:
+                        keep_running = False
+                        break
+                
+                if iter_idx == 0:
+                    # First loop successful, ready to receive command
+                    self.ready_event.set()
+                iter_idx += 1
 
                 # Regulate frequency
-                time.sleep(1 / self.frequency)
+                dt = 1 / self.frequency
+                t_end = t_start + dt * iter_idx
+                precise_wait(t_end=t_end, time_func=time.monotonic)
 
         finally:
             self.ready_event.set()

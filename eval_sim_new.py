@@ -180,7 +180,7 @@ def main(input, output, robot_config,
                 obs_float32=False,
                 camera_reorder=[int(x) for x in camera_reorder],
                 init_joints=init_joints,
-                enable_multi_cam_vis=True,
+                enable_multi_cam_vis=False,
                 # latency
                 camera_obs_latency=0.17,
                 # obs
@@ -236,6 +236,11 @@ def main(input, output, robot_config,
             action_pose_repr = cfg.task.pose_repr.action_pose_repr
             print('obs_pose_rep', obs_pose_rep)
             print('action_pose_repr', action_pose_repr)
+            
+            # wait 5 seconds for env to be ready
+            print("Waiting 5 sec for env to be ready")
+            time.sleep(5.0)
+            
 
 
             device = torch.device('cuda')
@@ -243,6 +248,7 @@ def main(input, output, robot_config,
 
             print("Warming up policy inference")
             obs = env.get_obs()
+            print("obs keys", obs.keys())
             episode_start_pose = list()
             for robot_id in range(len(robots_config)):
                 pose = np.concatenate([
@@ -260,13 +266,14 @@ def main(input, output, robot_config,
                 obs_dict = dict_apply(obs_dict_np, 
                     lambda x: torch.from_numpy(x).unsqueeze(0).to(device))
                 result = policy.predict_action(obs_dict)
+                print(result)
                 action = result['action_pred'][0].detach().to('cpu').numpy()
                 assert action.shape[-1] == 10 * len(robots_config)
                 action = get_real_umi_action(action, obs, action_pose_repr)
                 assert action.shape[-1] == 7 * len(robots_config)
                 del result
 
-            print('Ready!')
+            print('Ready! Starting evaluation!')
             while True:
                 # # ========= human control loop ==========
                 # print("Human in control!")
@@ -526,33 +533,33 @@ def main(input, output, robot_config,
                         print(f"Submitted {len(this_target_poses)} steps of actions.")
 
                         # visualize
-                        episode_id = env.replay_buffer.n_episodes
-                        obs_left_img = obs['camera0_rgb'][-1]
-                        obs_right_img = obs['camera0_rgb'][-1]
-                        vis_img = np.concatenate([obs_left_img, obs_right_img], axis=1)
-                        text = 'Episode: {}, Time: {:.1f}'.format(
-                            episode_id, time.monotonic() - t_start
-                        )
-                        cv2.putText(
-                            vis_img,
-                            text,
-                            (10,20),
-                            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                            fontScale=0.5,
-                            thickness=1,
-                            color=(255,255,255)
-                        )
-                        cv2.imshow('default', vis_img[...,::-1])
-
-                        _ = cv2.pollKey()
-                        press_events = key_counter.get_press_events()
+                        # episode_id = env.replay_buffer.n_episodes
+                        # obs_left_img = obs['camera0_rgb'][-1]
+                        # obs_right_img = obs['camera0_rgb'][-1]
+                        # vis_img = np.concatenate([obs_left_img, obs_right_img], axis=1)
+                        # text = 'Episode: {}, Time: {:.1f}'.format(
+                        #     episode_id, time.monotonic() - t_start
+                        # )
+                        # cv2.putText(
+                        #     vis_img,
+                        #     text,
+                        #     (10,20),
+                        #     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                        #     fontScale=0.5,
+                        #     thickness=1,
+                        #     color=(255,255,255)
+                        # )
+                        # cv2.imshow('default', vis_img[...,::-1])
+                        
+                        # _ = cv2.pollKey()
+                        # press_events = key_counter.get_press_events()
                         stop_episode = False
-                        for key_stroke in press_events:
-                            if key_stroke == KeyCode(char='s'):
-                                # Stop episode
-                                # Hand control back to human
-                                print('Stopped.')
-                                stop_episode = True
+                        # for key_stroke in press_events:
+                        #     if key_stroke == KeyCode(char='s'):
+                        #         # Stop episode
+                        #         # Hand control back to human
+                        #         print('Stopped.')
+                        #         stop_episode = True
 
                         t_since_start = time.time() - eval_t_start
                         if t_since_start > max_duration:

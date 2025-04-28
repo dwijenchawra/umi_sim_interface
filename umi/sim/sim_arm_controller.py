@@ -94,7 +94,7 @@ class SimURController(mp.Process):
 
         # Build ring buffer for ROS-based robot state data
         example = {
-            'eef_pose': np.zeros((7,), dtype=np.float32),  # [x, y, z, qx, qy, qz, qw]
+            'eef_pose': np.zeros((6,), dtype=np.float32),  # [x, y, z, rx, ry, rz]
             'ros_time': 0.0,
             'recv_time': 0.0
         }
@@ -193,27 +193,10 @@ class SimURController(mp.Process):
             os.sched_setscheduler(
                 0, os.SCHED_RR, os.sched_param(20))
 
-        # # start rtde
-        # robot_ip = self.robot_ip
-        # rtde_c = RTDEControlInterface(hostname=robot_ip)
-        # rtde_r = RTDEReceiveInterface(hostname=robot_ip)
-
         try:
             if self.verbose:
                 print(f"[RTDEPositionalController] Connect to robot")
 
-            # # set parameters
-            # if self.tcp_offset_pose is not None:
-            #     rtde_c.setTcp(self.tcp_offset_pose)
-            # if self.payload_mass is not None:
-            #     if self.payload_cog is not None:
-            #         assert rtde_c.setPayload(self.payload_mass, self.payload_cog)
-            #     else:
-            #         assert rtde_c.setPayload(self.payload_mass)
-            
-            # # init pose
-            # if self.joints_init is not None:
-            #     assert rtde_c.moveJ(self.joints_init, self.joints_init_speed, 1.4)
 
             # main loop
             dt = 1. / self.frequency
@@ -234,13 +217,24 @@ class SimURController(mp.Process):
                 # t_start = rtde_c.initPeriod()
 
                 # send command to robot
+                # send it here
+                
                 t_now = time.monotonic()
+                pose_command = pose_interp(t_now) # returns 6d tensor
+                # print(f"pose_command: {pose_command}")
+                self.ros_node.send_target_pose(
+                    robot_idx=self.robot_id,
+                    target_pose=pose_command
+                )
+                
+                
                 # # update robot state
                 recv_time, ros_time, eef_pose = self.ros_node.get_eef_pose(robot_idx=0)
+                t_recv = time.time()
                 state = {
                     'eef_pose': eef_pose,
                     'ros_time': ros_time,
-                    'recv_time': recv_time
+                    'recv_time': t_recv
                 }
                 self.ring_buffer.put(state)
 
@@ -294,8 +288,8 @@ class SimURController(mp.Process):
                         pose_interp = pose_interp.schedule_waypoint(
                             pose=target_pose,
                             time=target_time,
-                            max_pos_speed=self.max_pos_speed,
-                            max_rot_speed=self.max_rot_speed,
+                            max_pos_speed=100,
+                            max_rot_speed=100,
                             curr_time=curr_time,
                             last_waypoint_time=last_waypoint_time
                         )
@@ -306,13 +300,15 @@ class SimURController(mp.Process):
 
                 # regulate frequency
                 # rtde_c.waitPeriod(t_start)
+                
+                if iter_idx == 0:
+                    self.ready_event.set()
+                iter_idx += 1
+                
                 t_wait_util = t_start + (iter_idx + 1) * dt
                 precise_wait(t_wait_util, time_func=time.monotonic)
 
                 # first loop successful, ready to receive command
-                if iter_idx == 0:
-                    self.ready_event.set()
-                iter_idx += 1
 
                 if self.verbose:
                     print(f"[RTDEPositionalController] Actual frequency {1/(time.monotonic() - t_now)}")
