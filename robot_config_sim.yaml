@@ -22,6 +22,7 @@ robots:
     sphere_radius: 0.13
     sphere_center: [0.0, 0.0, -0.185] # Relative to EEF frame (tool0)
     robot_obs_latency: 0.0001
+    robot_action_latency: 0.0001
 
 
   # - # Robot 1 (Right Arm in Isaac Sim example)
@@ -38,10 +39,10 @@ robots:
 # IMPORTANT: Adjust these based on your specific gripper URDF and joint limits in the simulation.
 grippers:
   - # Gripper 0 (Left)
-    # Joint limits corresponding to min/max width in the simulation URDF/MJCF
-    joint_limits: [0.0, 45] # Example: finger_joint limits
+    gripper_id: 0
     # Corresponding physical width in meters at min/max joint limits
-    width_limits: [0.0, 0.085] # Example: Robotiq 2F-85 range
+    width_limits: [0.0, 0.068] # Example: Robotiq 2F-85 range
+    gripper_action_latency: 0.0001
 
   # - # Gripper 1 (Right)
   #   joint_limits: [0.0, 0.8]
