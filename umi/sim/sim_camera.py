@@ -11,7 +11,9 @@ from umi.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
 from umi.shared_memory.shared_memory_queue import SharedMemoryQueue, Full, Empty
 from umi.real_world.video_recorder import VideoRecorder
 from umi.common.usb_util import reset_usb_device
-from umi.sim.ros_interface import RosSimInterfaceNode
+
+from umi.sim.sim_camera_node import SimCameraNode
+import rclpy
 
 class Command(enum.Enum):
     RESTART_PUT = 0
@@ -33,10 +35,8 @@ class SimRosCamera(mp.Process):
             # e.g. /dev/video0
             # or /dev/v4l/by-id/usb-Elgato_Elgato_HD60_X_A00XB320216MTR-video-index0
             
-            # PASS IN THE ROS NODE TO GET THE CAMERA DATA
-            ros_node: RosSimInterfaceNode,
-            
             ros_camera_topic,
+            
             resolution=(1280, 720),
             capture_fps=60,
             put_fps=None,
@@ -135,7 +135,6 @@ class SimRosCamera(mp.Process):
         self.vis_ring_buffer = vis_ring_buffer
         self.command_queue = command_queue
         
-        self.ros_node = ros_node # used to get the camera data
         print(f'SimRosCamera {ros_camera_topic} initialized.')
 
 
@@ -214,22 +213,16 @@ class SimRosCamera(mp.Process):
 
     # ========= interval API ===========
     def run(self):
-        # limit threads
-        threadpool_limits(self.num_threads)
-        # cv2.setNumThreads(self.num_threads)
-
-        # open VideoCapture
-        # cap = cv2.VideoCapture(self.dev_video_path, cv2.CAP_V4L2)
+        # Create camera node
+        self.camera_node = SimCameraNode(
+            camera_topic=self.ros_camera_topic,
+            obs_float32=False,
+            image_transform=self.transform
+        )
         
         try:
-            # set resolution and fps
             w, h = self.resolution
             fps = self.capture_fps
-            # cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-            # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-            # set fps
-            # cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cap_buffer_size)
-            # cap.set(cv2.CAP_PROP_FPS, fps)
 
             # put frequency regulation
             put_idx = None
@@ -241,12 +234,13 @@ class SimRosCamera(mp.Process):
             iter_idx = 0
             t_start = time.time()
             while not self.stop_event.is_set():
+                # Spin ROS node once
+                rclpy.spin_once(self.camera_node)
+                
                 ts = time.time()
                 
-                # get data from ros node
-                recv_time, ros_time_sec, img_chw = self.ros_node.get_camera_data(
-                    camera_topic=self.ros_camera_topic,
-                )
+                # get data from camera node
+                recv_time, ros_time_sec, img_chw = self.camera_node.get_camera_data()
                 
                 assert img_chw is not None, f'Failed to get camera data from {self.ros_camera_topic}'
                 
@@ -255,7 +249,6 @@ class SimRosCamera(mp.Process):
                 
                 np.copyto(frame, np.transpose(img_chw, (1, 2, 0)))
                 
-                # t_recv = recv_time
                 t_recv = time.time()
                 t_cap = ros_time_sec
                 t_cal = t_recv - self.receive_latency  # calibrated latency
@@ -319,7 +312,6 @@ class SimRosCamera(mp.Process):
                 if self.verbose:
                     print(f'[UvcCamera {self.ros_camera_topic}] FPS {frequency}')
 
-
                 # fetch command from queue
                 try:
                     commands = self.command_queue.get_all()
@@ -346,8 +338,8 @@ class SimRosCamera(mp.Process):
                         self.video_recorder.stop_recording()
 
                 iter_idx += 1
+                
         finally:
+            self.camera_node.destroy_node()
             self.video_recorder.stop()
-            # When everything done, release the capture
-            # cap.release()
 

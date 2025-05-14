@@ -14,7 +14,6 @@ class MultiSimCamera:
             # v4l2 device file path
             # e.g. /dev/video0
             # or /dev/v4l/by-id/usb-Elgato_Elgato_HD60_X_A00XB320216MTR-video-index0
-            ros_node: RosSimInterfaceNode,
             ros_camera_paths: List[str],
             shm_manager: Optional[SharedMemoryManager]=None,
             resolution=(1280,720),
@@ -55,7 +54,6 @@ class MultiSimCamera:
         cameras = dict()
         for i, path in enumerate(ros_camera_paths):
             cameras[path] = SimRosCamera(
-                ros_node=ros_node,
                 shm_manager=shm_manager,
                 ros_camera_topic=path,
                 resolution=resolution[i],

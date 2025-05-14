@@ -25,10 +25,6 @@ from umi.common.usb_util import reset_all_elgato_devices, get_sorted_v4l_paths
 from umi.common.pose_util import pose_to_pos_rot
 from umi.common.interpolation_util import get_interp1d, PoseInterpolator
 
-from umi.sim.ros_interface import RosSimInterfaceNode
-from rclpy.executors import SingleThreadedExecutor
-
-
 class SimBimanualUmiEnv:
     def __init__(self, 
             # required params
@@ -85,20 +81,6 @@ class SimBimanualUmiEnv:
         else:
             self.node_owner = False
 
-        # start ros node
-        self.ros_node = RosSimInterfaceNode(
-            num_robots=len(robots_config),
-            num_cameras=len(robots_config),
-            obs_float32=obs_float32,
-            image_transforms=None
-        )
-        
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.ros_node)
-        self.spin_thread = threading.Thread(target=self.executor.spin, daemon=True)
-
-    
-        time.sleep(0.1)
         # rostopics
         camera_paths = ["/left_arm/camera", "/right_arm/camera"]
         if camera_reorder is not None:
@@ -122,26 +104,7 @@ class SimBimanualUmiEnv:
         transform = list()
         vis_transform = list()
         for path in camera_paths:
-            # if 'Cam_Link_4K' in path:
-            #     res = (3840, 2160)
-            #     fps = 30
-            #     buf = 3
-            #     bit_rate = 6000*1000
-            #     def tf4k(data, input_res=res):
-            #         img = data['color']
-            #         f = get_image_transform(
-            #             input_res=input_res,
-            #             output_res=obs_image_resolution, 
-            #             # obs output rgb
-            #             bgr_to_rgb=True)
-            #         img = f(img)
-            #         if obs_float32:
-            #             img = img.astype(np.float32) / 255
-            #         data['color'] = img
-            #         return data
-            #     transform.append(tf4k)
-            # else:
-            res = (1920, 1080)
+            res = (640, 480)
             fps = 60
             buf = 1
             bit_rate = 3000*1000
@@ -197,7 +160,6 @@ class SimBimanualUmiEnv:
             vis_transform.append(vis_tf)
 
         camera = MultiSimCamera(
-            ros_node=self.ros_node,
             ros_camera_paths=camera_paths,
             shm_manager=shm_manager,
             resolution=resolution,
@@ -236,7 +198,6 @@ class SimBimanualUmiEnv:
                 assert rc['robot_type'] in ['ur5', 'ur5e']
                 this_robot = SimURController(
                     shm_manager=shm_manager,
-                    ros_node=self.ros_node,
                     robot_id=rc['robot_id'],
                     frequency=60,
                     lookahead_time=0.1,
@@ -255,7 +216,6 @@ class SimBimanualUmiEnv:
                 shm_manager=shm_manager,
                 gripper_id=gc['gripper_id'],
                 width_limits=gc['width_limits'],
-                ros_node=self.ros_node,
                 frequency=60,
                 command_queue_size=1024,
                 verbose=False,
@@ -299,9 +259,6 @@ class SimBimanualUmiEnv:
     # ======== start-stop API =============
     @property
     def is_ready(self):
-        # print("camera ready: ", self.camera.is_ready, 
-            # "robots ready: ", [robot.is_ready for robot in self.robots],
-            # "grippers ready: ", [gripper.is_ready for gripper in self.grippers])
         ready_flag = self.camera.is_ready
         for robot in self.robots:
             ready_flag = ready_flag and robot.is_ready
@@ -310,19 +267,6 @@ class SimBimanualUmiEnv:
         return ready_flag
     
     def start(self, wait=True):
-        
-        # start ros node
-        # self.ros_node.start()
-        if not self.spin_thread.is_alive():
-            self.spin_thread.start()
-            # Add a small delay to allow subscriptions to potentially establish
-            time.sleep(1.0)
-            print("[SimulatedBimanualUmiEnv] ROS2 spinning started.")
-        else:
-             print("[SimulatedBimanualUmiEnv] ROS2 spinning already started.")
-
-
-        
         self.camera.start(wait=False)
         for robot in self.robots:
             robot.start(wait=False)
@@ -335,7 +279,6 @@ class SimBimanualUmiEnv:
             self.start_wait()
 
     def stop(self, wait=True):
-        
         self.end_episode()
         if self.multi_cam_vis is not None:
             self.multi_cam_vis.stop(wait=False)
@@ -347,22 +290,9 @@ class SimBimanualUmiEnv:
         if wait:
             self.stop_wait()
             
-        # stop ros node
-        # self.ros_node.stop()
-        
-        if self.executor is not None:
-            self.executor.shutdown()
-            self.executor = None # Prevent double shutdown
-        if self.spin_thread.is_alive():
-             self.spin_thread.join(timeout=1.0) # Wait shortly for thread to exit
-        print("[SimulatedBimanualUmiEnv] Stopping ROS2 node...")
-        if self.ros_node is not None:
-             self.ros_node.destroy_node()
-             self.ros_node = None # Prevent double destruction
         if self.node_owner and rclpy.ok():
-             rclpy.try_shutdown() # Use try_shutdown if rclpy might be shared
+            rclpy.try_shutdown()
         print("[SimulatedBimanualUmiEnv] Stopped.")
-
 
     def start_wait(self):
         self.camera.start_wait()
@@ -544,7 +474,7 @@ class SimBimanualUmiEnv:
 
         # schedule waypoints
         for i in range(len(new_actions)):
-            print(f"Executing action {i:02d} at timestamp {timestamps[i]:.3f}: {[f'{x:.2f}' for x in actions[i]]}")
+            # print(f"Executing action {i:02d} at timestamp {timestamps[i]:.3f}: {[f'{x:.2f}' for x in actions[i]]}")
             for robot_idx, (robot, gripper, rc, gc) in enumerate(zip(self.robots, self.grippers, self.robots_config, self.grippers_config)):
                 r_latency = rc['robot_action_latency'] if compensate_latency else 0.0
                 g_latency = gc['gripper_action_latency'] if compensate_latency else 0.0
@@ -558,18 +488,6 @@ class SimBimanualUmiEnv:
                     pos=g_actions,
                     target_time=new_timestamps[i] - g_latency
                 )
-                
-                # send to ros node
-                # self.ros_node.send_target_pose(
-                #     robot_idx=robot_idx,
-                #     target_pose=r_actions
-                # )
-                # self.ros_node.send_target_gripper(
-                #     robot_idx=robot_idx,
-                #     target_width=g_actions
-                # )
-                # print(f"Robot {robot_idx} action: {r_actions}, gripper {robot_idx} action: {g_actions}")
-                
 
         # record actions
         if self.action_accumulator is not None:
@@ -578,12 +496,6 @@ class SimBimanualUmiEnv:
                 new_timestamps
             )
     
-    # def get_robot_state(self):
-    #     return [robot.get_state() for robot in self.robots]
-    
-    # def get_gripper_state(self):
-    #     return [gripper.get_state() for gripper in self.grippers]
-
     # recording API
     def start_episode(self, start_time=None):
         "Start recording and return first obs"

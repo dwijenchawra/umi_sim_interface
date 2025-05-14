@@ -49,9 +49,6 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from umi.common.precise_sleep import precise_wait
 from umi.sim.sim_bimanual_umi_env import SimBimanualUmiEnv
-from umi.real_world.keystroke_counter import (
-    KeystrokeCounter, Key, KeyCode
-)
 from umi.real_world.real_inference_util import (get_real_obs_dict,
                                                 get_real_obs_resolution,
                                                 get_real_umi_obs_dict,
@@ -170,8 +167,7 @@ def main(input, output, robot_config,
 
     print("steps_per_inference:", steps_per_inference)
     with SharedMemoryManager() as shm_manager:
-        with KeystrokeCounter() as key_counter, \
-            SimBimanualUmiEnv(
+        with SimBimanualUmiEnv(
                 output_dir=output,
                 robots_config=robots_config,
                 grippers_config=grippers_config,
@@ -194,7 +190,7 @@ def main(input, output, robot_config,
                 max_pos_speed=2.0,
                 max_rot_speed=6.0,
                 shm_manager=shm_manager) as env:
-            cv2.setNumThreads(2)
+            # cv2.setNumThreads(2)
             print("Waiting for camera")
             time.sleep(1.0)
 

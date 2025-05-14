@@ -7,21 +7,21 @@ from umi.shared_memory.shared_memory_queue import (
     SharedMemoryQueue, Empty)
 from umi.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
 from umi.common.precise_sleep import precise_wait
+from umi.real_world.wsg_binary_driver import WSGBinaryDriver
 from umi.common.pose_trajectory_interpolator import PoseTrajectoryInterpolator
+import json
 
-from umi.sim.sim_gripper_node import SimGripperNode
-import rclpy
 class Command(enum.Enum):
     SHUTDOWN = 0
     SCHEDULE_WAYPOINT = 1
     RESTART_PUT = 2
 
-class SimGripperController(mp.Process):
+class RosNodeSpawner(mp.Process):
     def __init__(self,
             shm_manager: SharedMemoryManager,
             gripper_id: int,
             width_limits: list,
-            frequency=10,
+            frequency=60,
             command_queue_size=1024,
             verbose=False
             ):
@@ -63,6 +63,7 @@ class SimGripperController(mp.Process):
         self.input_queue = input_queue
         self.ring_buffer = ring_buffer
 
+    # ========= launch method ===========
     def start(self, wait=True):
         super().start()
         if wait:
@@ -89,6 +90,20 @@ class SimGripperController(mp.Process):
     def is_ready(self):
         return self.ready_event.is_set()
     
+    # ========= context manager ===========
+    def __enter__(self):
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            print(f"Exception occurred: {exc_type.__name__}: {exc_val}")
+            import traceback
+            traceback.print_tb(exc_tb)
+
+        self.stop()
+        
+    # ========= command methods ============
     def schedule_waypoint(self, pos: float, target_time: float):
         message = {
             'cmd': Command.SCHEDULE_WAYPOINT.value,
@@ -97,12 +112,14 @@ class SimGripperController(mp.Process):
         }
         self.input_queue.put(message)
 
+
     def restart_put(self, start_time):
         self.input_queue.put({
             'cmd': Command.RESTART_PUT.value,
             'target_time': start_time
         })
     
+    # ========= receive APIs =============
     def get_state(self, k=None, out=None):
         if k is None:
             return self.ring_buffer.get(out=out)
@@ -112,40 +129,32 @@ class SimGripperController(mp.Process):
     def get_all_state(self):
         return self.ring_buffer.get_all()
     
+    # ========= main loop in process ============
     def run(self):
-        # Create gripper node
-        self.gripper_node = SimGripperNode(gripper_id=self.gripper_id)
-        
         try:
             keep_running = True
             iter_idx = 0
             
-            curr_t = time.monotonic()
-            
-            recv_time, ros_time, curr_pos = self.gripper_node.get_gripper_state()
-            curr_pos = curr_pos[0]
-            
-            last_waypoint_time = curr_t
-            pose_interp = PoseTrajectoryInterpolator(
-                times=[curr_t],
-                poses=[[curr_pos,0,0,0,0,0]]
-            )
+            # make a subprocess for the ros node
+            ros_command = ["python", "/home/dwijen/Documents/CODE/universal_manipulation_interface/umi/sim/ros_interface.py"]
 
+            self.ros_node_process = subprocess.Popen(
+                ros_command, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE
+            )
+            
             t_start = time.monotonic()
             while keep_running:
-                # Spin ROS node once
-                rclpy.spin_once(self.gripper_node)
-                
                 t_now = time.monotonic()
                 dt = 1 / self.frequency
                 t_target = t_now
                 target_pos = pose_interp(t_target)[0]
                 
                 # set target position (already in width unit)
-                self.gripper_node.send_target_gripper(target_width=target_pos)
+                self.ros_node.send_target_gripper(robot_idx=self.gripper_id, target_width=target_pos)
 
                 # Fetch gripper state from ROS
-                recv_time, ros_time, gripper_width = self.gripper_node.get_gripper_state()
                 t_recv = time.time()
                 state = {
                     'gripper_position': gripper_width[0],
@@ -204,8 +213,32 @@ class SimGripperController(mp.Process):
                 t_end = t_start + dt * iter_idx
                 precise_wait(t_end=t_end, time_func=time.monotonic)
 
+                # Read data from stdout
+                try:
+                    stdout_data = self.ros_node_process.stdout.readline()
+                    parsed_data = parse_stdout_data(stdout_data)
+                    if parsed_data:
+                        camera_data = parsed_data.get("camera_data", [])
+                        eef_pose = parsed_data.get("eef_pose", [])
+                        gripper_state = parsed_data.get("gripper_state", [])
+
+                        # Process the received data as needed
+                        print("Camera Data:", camera_data)
+                        print("EEF Pose:", eef_pose)
+                        print("Gripper State:", gripper_state)
+                except Exception as e:
+                    print(f"Error reading from stdout: {e}")
+
         finally:
-            self.gripper_node.destroy_node()
             self.ready_event.set()
             if self.verbose:
                 print("[SimGripperController] Process terminated.")
+
+def parse_stdout_data(data):
+    """Parse the JSON data received from stdout."""
+    try:
+        parsed_data = json.loads(data)
+        return parsed_data
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        return None

@@ -6,17 +6,14 @@ from multiprocessing.managers import SharedMemoryManager
 import scipy.interpolate as si
 import scipy.spatial.transform as st
 import numpy as np
-# from rtde_control import RTDEControlInterface
-
-# from rtde_receive import RTDEReceiveInterface
 from umi.shared_memory.shared_memory_queue import (
     SharedMemoryQueue, Empty)
 from umi.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
 from umi.common.pose_trajectory_interpolator import PoseTrajectoryInterpolator
 from diffusion_policy.common.precise_sleep import precise_wait
 
-from umi.sim.ros_interface import RosSimInterfaceNode
-
+from umi.sim.sim_arm_node import SimArmNode
+import rclpy
 class Command(enum.Enum):
     STOP = 0
     SERVOL = 1
@@ -32,7 +29,6 @@ class SimURController(mp.Process):
 
     def __init__(self,
             shm_manager: SharedMemoryManager,
-            ros_node: RosSimInterfaceNode,
             robot_id,
             frequency=125, 
             lookahead_time=0.1, 
@@ -79,7 +75,7 @@ class SimURController(mp.Process):
         if get_max_k is None:
             get_max_k = int(frequency * 5)
 
-        # # build input queue
+        # build input queue
         example = {
             'cmd': Command.SERVOL.value,
             'target_pose': np.zeros((6,), dtype=np.float64),
@@ -111,8 +107,6 @@ class SimURController(mp.Process):
         self.ring_buffer = ring_buffer
         self.receive_keys = receive_keys
         
-        self.ros_node = ros_node
-    
     # ========= launch method ===========
     def start(self, wait=True):
         super().start()
@@ -146,6 +140,11 @@ class SimURController(mp.Process):
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            print(f"Exception occurred: {exc_type.__name__}: {exc_val}")
+            import traceback
+            traceback.print_tb(exc_tb)
+
         self.stop()
         
     # ========= command methods ============
@@ -188,19 +187,16 @@ class SimURController(mp.Process):
     
     # ========= main loop in process ============
     def run(self):
-        # enable soft real-time
-        if self.soft_real_time:
-            os.sched_setscheduler(
-                0, os.SCHED_RR, os.sched_param(20))
-
+        # Create arm node
+        self.arm_node = SimArmNode(robot_id=self.robot_id)
+        
         try:
             if self.verbose:
                 print(f"[RTDEPositionalController] Connect to robot")
 
-
             # main loop
             dt = 1. / self.frequency
-            recv_time, ros_time, curr_pose = self.ros_node.get_eef_pose(robot_idx=self.robot_id)
+            recv_time, ros_time, curr_pose = self.arm_node.get_eef_pose()
             # use monotonic time to make sure the control loop never go backward
             curr_t = time.monotonic()
             last_waypoint_time = curr_t
@@ -213,23 +209,18 @@ class SimURController(mp.Process):
             iter_idx = 0
             keep_running = True
             while keep_running:
-                # start control iteration
-                # t_start = rtde_c.initPeriod()
-
-                # send command to robot
-                # send it here
+                # Spin ROS node once
+                rclpy.spin_once(self.arm_node)
                 
                 t_now = time.monotonic()
                 pose_command = pose_interp(t_now) # returns 6d tensor
-                # print(f"pose_command: {pose_command}")
-                self.ros_node.send_target_pose(
-                    robot_idx=self.robot_id,
+                self.arm_node.send_target_pose(
+                    # robot_idx=self.robot_id,
                     target_pose=pose_command
                 )
                 
-                
-                # # update robot state
-                recv_time, ros_time, eef_pose = self.ros_node.get_eef_pose(robot_idx=0)
+                # update robot state
+                recv_time, ros_time, eef_pose = self.arm_node.get_eef_pose()
                 t_recv = time.time()
                 state = {
                     'eef_pose': eef_pose,
@@ -260,10 +251,6 @@ class SimURController(mp.Process):
                         # stop immediately, ignore later commands
                         break
                     elif cmd == Command.SERVOL.value:
-                        # since curr_pose always lag behind curr_target_pose
-                        # if we start the next interpolation with curr_pose
-                        # the command robot receive will have discontinouity
-                        # and cause jittery robot behavior.
                         target_pose = command['target_pose']
                         duration = float(command['duration'])
                         curr_time = t_now + dt
@@ -272,8 +259,8 @@ class SimURController(mp.Process):
                             pose=target_pose,
                             time=t_insert,
                             curr_time=curr_time,
-                            max_pos_speed=self.max_pos_speed,
-                            max_rot_speed=self.max_rot_speed
+                            max_pos_speed=100,
+                            max_rot_speed=100
                         )
                         last_waypoint_time = t_insert
                         if self.verbose:
@@ -298,9 +285,6 @@ class SimURController(mp.Process):
                         keep_running = False
                         break
 
-                # regulate frequency
-                # rtde_c.waitPeriod(t_start)
-                
                 if iter_idx == 0:
                     self.ready_event.set()
                 iter_idx += 1
@@ -308,20 +292,11 @@ class SimURController(mp.Process):
                 t_wait_util = t_start + (iter_idx + 1) * dt
                 precise_wait(t_wait_util, time_func=time.monotonic)
 
-                # first loop successful, ready to receive command
-
                 if self.verbose:
                     print(f"[RTDEPositionalController] Actual frequency {1/(time.monotonic() - t_now)}")
 
         finally:
-            # manditory cleanup
-            # decelerate
-            # rtde_c.servoStop()
-
-            # # terminate
-            # rtde_c.stopScript()
-            # rtde_c.disconnect()
-            # rtde_r.disconnect()
+            self.arm_node.destroy_node()
             self.ready_event.set()
 
             if self.verbose:

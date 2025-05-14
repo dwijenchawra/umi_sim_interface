@@ -77,7 +77,13 @@ class RosSimInterfaceNode(Node):
             self.target_pose_pubs.append(pub_pose)
             pub_grip = self.create_publisher(Float64, f'/{arm_prefix}/target_gripper_width', 10)
             self.target_gripper_pubs.append(pub_grip)
+            
 
+    def is_ready(self):
+        """Check if the node is ready."""
+        with self.ros_data_lock:
+            print("is_ready: ", self.latest_camera_data, self.latest_eef_pose, self.latest_gripper_state)
+            return all(data is not None for data in self.latest_camera_data + self.latest_eef_pose + self.latest_gripper_state)
 
     def _get_ros_time_sec(self, msg) -> float:
         """Extract time in seconds from ROS message header."""
@@ -85,6 +91,7 @@ class RosSimInterfaceNode(Node):
 
     def camera_callback(self, msg: Image, camera_idx: int):
         """Handles incoming camera image messages."""
+        print(f"camera_callback: {msg.header.stamp.sec} {msg.header.stamp.nanosec}")
         try:
             recv_time = time.time()
             ros_time_sec = self._get_ros_time_sec(msg)
@@ -100,6 +107,7 @@ class RosSimInterfaceNode(Node):
             self.get_logger().error(f"Error processing camera {camera_idx} msg: {e}", throttle_duration_sec=1.0)
 
     def eef_pose_callback(self, msg: PoseStamped, robot_idx: int):
+        print(f"eef_pose_callback: {msg.header.stamp.sec} {msg.header.stamp.nanosec}")
         """Handles incoming end-effector pose messages."""
         try:
             recv_time = time.time()
@@ -116,6 +124,7 @@ class RosSimInterfaceNode(Node):
             self.get_logger().error(f"Error processing EEF pose {robot_idx} msg: {e}", throttle_duration_sec=1.0)
 
     def gripper_state_callback(self, msg: Float64, robot_idx: int):
+        print(f"gripper_state_callback: {msg.data}")
         """Handles incoming gripper state messages."""
         try:
             recv_time = time.time()
@@ -196,3 +205,50 @@ class RosSimInterfaceNode(Node):
         msg = Float64()
         msg.data = target_width
         self.target_gripper_pubs[robot_idx].publish(msg)
+
+    def send_data_to_stdout(self):
+        """Send camera, EEF pose, and gripper data to stdout."""
+        import json
+        with self.ros_data_lock:
+            data = {
+                "camera_data": [
+                    {
+                        "recv_time": cam[0],
+                        "ros_time_sec": cam[1],
+                        "image": cam[2].tolist() if cam else None
+                    } for cam in self.latest_camera_data
+                ],
+                "eef_pose": [
+                    {
+                        "recv_time": pose[0],
+                        "ros_time_sec": pose[1],
+                        "pose_6d": pose[2].tolist() if pose else None
+                    } for pose in self.latest_eef_pose
+                ],
+                "gripper_state": [
+                    {
+                        "recv_time": grip[0],
+                        "ros_time_sec": grip[1],
+                        "gripper_width": grip[2].tolist() if grip else None
+                    } for grip in self.latest_gripper_state
+                ]
+            }
+            print(json.dumps(data))
+
+    def main_loop(self):
+        """Main loop to send data to stdout."""
+        while rclpy.ok():
+            rclpy.spin_once(self)
+            self.send_data_to_stdout()
+            time.sleep(0.01)  # Add a small delay to prevent busy-waiting
+
+# Replace the main function
+if __name__ == '__main__':
+    rclpy.init()
+    node = RosSimInterfaceNode(num_robots=2, num_cameras=2, obs_float32=False, image_transforms=None)
+    try:
+        node.main_loop()
+    except KeyboardInterrupt:
+        pass
+    node.destroy_node()
+    rclpy.shutdown()
